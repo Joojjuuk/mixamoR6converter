@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AnimationComparison } from "@/components/AnimationComparison";
+import { AnimationComparisonV3 } from "@/components/AnimationComparisonV3";
 import { CURRENT_SOLVER_VERSION, getProject } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
@@ -25,13 +25,17 @@ export default async function ProjectPage({ params }: Props) {
           <p>{project.originalFilename} · {formatBytes(project.originalSize)}</p>
         </div>
         <div className="projectActions">
-          <a className="secondaryButton" href={`/api/projects/${project.id}/source`} download={project.originalFilename}>
+          <a
+            className="secondaryButton"
+            href={`/api/projects/${project.id}/source`}
+            download={project.originalFilename}
+          >
             Baixar original
           </a>
         </div>
       </div>
 
-      <AnimationComparison
+      <AnimationComparisonV3
         projectId={project.id}
         sourceUrl={`/api/projects/${project.id}/source`}
       />
@@ -51,12 +55,12 @@ export default async function ProjectPage({ params }: Props) {
         </div>
         <div className="panel infoCard">
           <span>Root Motion</span>
-          <strong>In place + grounding</strong>
+          <strong>In place + support-foot lock</strong>
         </div>
       </div>
 
       <p className="hint">
-        O preview-v2 separa root yaw, torso e membros em espaços locais diferentes e mantém contato com o chão quando a fonte está apoiada. Depois da validação, este mesmo solver será portado para o worker Blender para bake/export FBX.
+        O preview-v3 usa a cadeia ombro → cotovelo → mão para reduzir braços soltos e trava no chão o mesmo pé de apoio detectado no Mixamo. O botão de GIF gera uma comparação sincronizada para registrar diferenças frame a frame.
       </p>
     </>
   );
