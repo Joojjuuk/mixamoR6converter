@@ -112,9 +112,37 @@ Root recebe somente yaw. Pitch/roll continuam no torso.
 
 A correção horizontal do foot plant possui limite de deslocamento e de passo por frame. Grounding em Y não deve ser sacrificado por smoothing horizontal.
 
-## 7. GIF/debug
+## 7. GIF/WebM de diagnóstico
 
-O export de GIF deve usar o mesmo sampler temporal da tela. `renderAt(time)` precisa renderizar o timestamp solicitado diretamente, sem depender de esperar o loop normal de `requestAnimationFrame`.
+GIF e WebM devem usar o mesmo sampler temporal da tela. `renderAt(time)` precisa renderizar o timestamp solicitado diretamente, sem depender do estado anterior do playback.
+
+### GIF
+
+- comparação rápida e leve;
+- original e R6 lado a lado;
+- timestamp e solver no rodapé.
+
+### WebM
+
+Adicionar botão:
+
+```text
+Baixar WebM comparação
+```
+
+Requisitos:
+
+- 30 FPS;
+- resolução de diagnóstico maior que a do GIF;
+- Original × R6 no mesmo frame;
+- cabeçalho e rodapé com clip, solver e timestamp;
+- codec `VP9`, com fallback `VP8` / WebM simples quando necessário;
+- progresso visível durante geração;
+- pausar playback durante export;
+- restaurar timestamp e estado de playback ao finalizar;
+- impedir GIF e WebM simultâneos.
+
+Como `MediaRecorder` usa timestamps de relógio real, o WebM é gravado no ritmo real do clip para preservar a duração esperada.
 
 Diagnóstico exibido:
 
@@ -148,11 +176,15 @@ Diagnóstico exibido:
 - [ ] cadeias quase retas não geram roll aleatório;
 - [ ] esquerda/direita nunca são trocadas.
 
-### Diagnóstico
+### Diagnóstico/export
 
-- [ ] GIF e viewer usam exatamente a mesma pose track;
+- [ ] GIF, WebM e viewer usam a mesma pose track;
 - [ ] UI mostra state, lock e plant error;
-- [ ] export restaura o timestamp anterior.
+- [ ] GIF restaura o timestamp anterior;
+- [ ] WebM gera um arquivo reproduzível com duração compatível com o clip;
+- [ ] WebM contém Original × R6 sincronizados a 30 FPS;
+- [ ] export WebM restaura timestamp e playback anterior;
+- [ ] somente um export pode rodar por vez.
 
 ## Não-objetivos
 
@@ -165,4 +197,4 @@ Diagnóstico exibido:
 
 ## Validação obrigatória
 
-Repetir `Standing Melee Combo Attack Ver. 1.fbx` e comparar v3 × v4 em 0.25x e 1x. Depois testar pelo menos `run`, `jump`, `dodge` e `sword slash` antes de portar o solver para Blender.
+Repetir `Standing Melee Combo Attack Ver. 1.fbx` e comparar v3 × v4 em 0.25x e 1x. Gerar preferencialmente o WebM de comparação para revisão frame a frame. Depois testar pelo menos `run`, `jump`, `dodge` e `sword slash` antes de portar o solver para Blender.
