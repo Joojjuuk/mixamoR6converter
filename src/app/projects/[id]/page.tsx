@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AnimationComparison } from "@/components/AnimationComparison";
-import { getProject } from "@/lib/storage";
+import { CURRENT_SOLVER_VERSION, getProject } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +43,7 @@ export default async function ProjectPage({ params }: Props) {
         </div>
         <div className="panel infoCard">
           <span>Solver</span>
-          <strong>{project.settings.solverVersion}</strong>
+          <strong>{CURRENT_SOLVER_VERSION}</strong>
         </div>
         <div className="panel infoCard">
           <span>Sampling target</span>
@@ -51,12 +51,12 @@ export default async function ProjectPage({ params }: Props) {
         </div>
         <div className="panel infoCard">
           <span>Root Motion</span>
-          <strong>In place</strong>
+          <strong>In place + grounding</strong>
         </div>
       </div>
 
       <p className="hint">
-        Nesta fase o R6 é uma projeção visual em tempo real. O próximo marco é bakear exatamente este solver sobre um rig R6 de referência e gerar o FBX importável pelo Roblox Studio.
+        O preview-v2 separa root yaw, torso e membros em espaços locais diferentes e mantém contato com o chão quando a fonte está apoiada. Depois da validação, este mesmo solver será portado para o worker Blender para bake/export FBX.
       </p>
     </>
   );
