@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AnimationComparisonV3 } from "@/components/AnimationComparisonV3";
+import { AnimationComparisonV4 } from "@/components/AnimationComparisonV4";
 import { CURRENT_SOLVER_VERSION, getProject } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +35,7 @@ export default async function ProjectPage({ params }: Props) {
         </div>
       </div>
 
-      <AnimationComparisonV3
+      <AnimationComparisonV4
         projectId={project.id}
         sourceUrl={`/api/projects/${project.id}/source`}
       />
@@ -51,16 +51,16 @@ export default async function ProjectPage({ params }: Props) {
         </div>
         <div className="panel infoCard">
           <span>Sampling target</span>
-          <strong>{project.settings.fps} FPS</strong>
+          <strong>{project.settings.fps} FPS temporal</strong>
         </div>
         <div className="panel infoCard">
           <span>Root Motion</span>
-          <strong>In place + support-foot lock</strong>
+          <strong>In place + exact support-foot IK</strong>
         </div>
       </div>
 
       <p className="hint">
-        O preview-v3 usa a cadeia ombro → cotovelo → mão para reduzir braços soltos e trava no chão o mesmo pé de apoio detectado no Mixamo. O botão de GIF gera uma comparação sincronizada para registrar diferenças frame a frame.
+        O preview-v4.1 mantém a pose track temporal do v4, mas fecha o foot plant com IK de uma articulação compatível com R6: o pé de apoio é resolvido de volta no anchor após a correção do root. O probe usa toe estável em X/Z e os planos de cotovelo/joelho preservam continuidade entre frames.
       </p>
     </>
   );

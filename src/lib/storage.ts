@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-export const CURRENT_SOLVER_VERSION = "preview-v3" as const;
+export const CURRENT_SOLVER_VERSION = "preview-v4.1" as const;
 
 export type ProjectStatus = "uploaded" | "preview_ready" | "failed";
 
@@ -12,7 +12,7 @@ export type ConversionSettings = {
   targetRig: "roblox-r6";
   fps: 30;
   rootMotion: "in_place";
-  solverVersion: "preview-v1" | "preview-v2" | "preview-v3";
+  solverVersion: "preview-v1" | "preview-v2" | "preview-v3" | "preview-v4" | "preview-v4.1";
 };
 
 export type ProjectRecord = {
