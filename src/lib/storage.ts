@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+export const CURRENT_SOLVER_VERSION = "preview-v2" as const;
 
 export type ProjectStatus = "uploaded" | "preview_ready" | "failed";
 
@@ -11,7 +12,7 @@ export type ConversionSettings = {
   targetRig: "roblox-r6";
   fps: 30;
   rootMotion: "in_place";
-  solverVersion: "preview-v1";
+  solverVersion: "preview-v1" | "preview-v2";
 };
 
 export type ProjectRecord = {
@@ -102,7 +103,7 @@ export async function createProjectFromFile(file: File, requestedName?: string) 
       targetRig: "roblox-r6",
       fps: 30,
       rootMotion: "in_place",
-      solverVersion: "preview-v1",
+      solverVersion: CURRENT_SOLVER_VERSION,
     },
   };
 
@@ -125,13 +126,20 @@ export async function getProject(id: string): Promise<ProjectRecord | null> {
   }
 }
 
-export async function markPreviewReady(id: string) {
+export async function markPreviewReady(
+  id: string,
+  solverVersion: ConversionSettings["solverVersion"] = CURRENT_SOLVER_VERSION,
+) {
   const project = await getProject(id);
   if (!project) return null;
 
   const updated: ProjectRecord = {
     ...project,
     status: "preview_ready",
+    settings: {
+      ...project.settings,
+      solverVersion,
+    },
     updatedAt: new Date().toISOString(),
     error: undefined,
   };
