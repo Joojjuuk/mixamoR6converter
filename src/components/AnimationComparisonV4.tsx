@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { exportComparisonGif } from "@/lib/exportComparisonGif";
+import { exportComparisonWebm } from "@/lib/exportComparisonWebm";
 import {
   SAMPLE_FPS,
   SOLVER_VERSION,
@@ -112,6 +113,10 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
   const [exportingGif, setExportingGif] = useState(false);
   const [gifProgress, setGifProgress] = useState(0);
   const [gifError, setGifError] = useState<string | null>(null);
+  const [exportingWebm, setExportingWebm] = useState(false);
+  const [webmProgress, setWebmProgress] = useState(0);
+  const [webmError, setWebmError] = useState<string | null>(null);
+  const exportBusy = exportingGif || exportingWebm;
 
   useEffect(() => {
     playback.current.playing = playing;
@@ -288,7 +293,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
   async function downloadDifferenceGif() {
     const originalCanvas = originalHost.current?.querySelector("canvas");
     const r6Canvas = r6Host.current?.querySelector("canvas");
-    if (!originalCanvas || !r6Canvas || duration <= 0 || exportingGif) return;
+    if (!originalCanvas || !r6Canvas || duration <= 0 || exportBusy) return;
 
     const previous = {
       playing: playback.current.playing,
@@ -329,6 +334,50 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
     }
   }
 
+  async function downloadDifferenceWebm() {
+    const originalCanvas = originalHost.current?.querySelector("canvas");
+    const r6Canvas = r6Host.current?.querySelector("canvas");
+    if (!originalCanvas || !r6Canvas || duration <= 0 || exportBusy) return;
+
+    const previous = {
+      playing: playback.current.playing,
+      time: playback.current.time,
+    };
+
+    setWebmError(null);
+    setExportingWebm(true);
+    setWebmProgress(0);
+    playback.current.playing = false;
+    setPlaying(false);
+
+    try {
+      await exportComparisonWebm({
+        originalCanvas,
+        r6Canvas,
+        duration,
+        clipName,
+        solverVersion: SOLVER_VERSION,
+        renderAt: async (nextTime) => {
+          playback.current.time = nextTime;
+          renderExactFrame.current?.(nextTime);
+          await Promise.resolve();
+        },
+        onProgress: setWebmProgress,
+      });
+    } catch (exportError) {
+      setWebmError(
+        exportError instanceof Error ? exportError.message : "Falha ao gerar WebM",
+      );
+    } finally {
+      playback.current.time = previous.time;
+      renderExactFrame.current?.(previous.time);
+      playback.current.playing = previous.playing;
+      setTime(previous.time);
+      setPlaying(previous.playing);
+      setExportingWebm(false);
+    }
+  }
+
   return (
     <section className="panel comparisonWrap">
       <div className="viewerHeader">
@@ -351,11 +400,12 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
 
       <div className="transport">
         <div className="transportRow">
-          <button type="button" onClick={() => seek(0)} title="Reiniciar">↺</button>
+          <button type="button" onClick={() => seek(0)} title="Reiniciar" disabled={exportBusy}>↺</button>
           <button
             type="button"
             onClick={() => setPlaying((value) => !value)}
             title="Play / Pause"
+            disabled={exportBusy}
           >
             {playing ? "Ⅱ" : "▶"}
           </button>
@@ -367,15 +417,15 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
             step={1 / SAMPLE_FPS}
             value={Math.min(time, Math.max(duration, 0.001))}
             onChange={(event) => seek(Number(event.target.value))}
-            disabled={!duration || exportingGif}
+            disabled={!duration || exportBusy}
           />
           <div className="timecode">{formatTime(time)} / {formatTime(duration)}s</div>
-          <button type="button" onClick={cycleSpeed} disabled={exportingGif}>{speed}×</button>
+          <button type="button" onClick={cycleSpeed} disabled={exportBusy}>{speed}×</button>
           <button
             type="button"
             onClick={() => setLoop((value) => !value)}
             title="Loop"
-            disabled={exportingGif}
+            disabled={exportBusy}
           >
             {loop ? "Loop ✓" : "Loop"}
           </button>
@@ -383,12 +433,23 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
             type="button"
             className="gifExportButton"
             onClick={() => void downloadDifferenceGif()}
-            disabled={loading || Boolean(error) || exportingGif || !duration}
+            disabled={loading || Boolean(error) || exportBusy || !duration}
             title="Gera um GIF sincronizado Original × R6 para comparar e reportar bugs"
           >
             {exportingGif
               ? `GIF ${Math.round(gifProgress * 100)}%`
               : "Baixar GIF comparação"}
+          </button>
+          <button
+            type="button"
+            className="gifExportButton"
+            onClick={() => void downloadDifferenceWebm()}
+            disabled={loading || Boolean(error) || exportBusy || !duration}
+            title="Gera um WebM sincronizado Original × R6 em 30 FPS"
+          >
+            {exportingWebm
+              ? `WebM ${Math.round(webmProgress * 100)}%`
+              : "Baixar WebM comparação"}
           </button>
         </div>
         <div className="transportMeta">
@@ -400,6 +461,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
           </span>
         </div>
         {gifError ? <div className="gifExportError">{gifError}</div> : null}
+        {webmError ? <div className="gifExportError">{webmError}</div> : null}
       </div>
     </section>
   );
