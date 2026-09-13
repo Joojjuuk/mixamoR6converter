@@ -17,7 +17,7 @@ import {
   measureSourceReference,
   type PoseTrack,
   type SolverDiagnostics,
-} from "@/lib/r6SolverV4";
+} from "@/lib/r6SolverV41";
 
 type Props = {
   projectId: string;
@@ -189,7 +189,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         const bones = detectMixamoBones(sourceObject);
         if (!bones) {
           throw new Error(
-            "Could not map the required Mixamo arm/leg chain. Solver v4 expects the standard Mixamo humanoid skeleton.",
+            "Could not map the required Mixamo arm/leg chain. Solver v4.1 expects the standard Mixamo humanoid skeleton.",
           );
         }
 
@@ -198,7 +198,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         poseTrack = buildPoseTrack(mixer, sourceObject, bones, reference, clipDuration);
 
         if (poseTrack.samples.length < 2) {
-          throw new Error("Solver v4 could not build a temporal pose track for this FBX.");
+          throw new Error("Solver v4.1 could not build a temporal pose track for this FBX.");
         }
 
         playback.current.time = 0;
@@ -393,7 +393,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         </div>
         <div className="viewerPane">
           <div ref={r6Host} className="canvasHost" />
-          {loading ? <div className="viewerMessage">Gerando pose track R6 v4…</div> : null}
+          {loading ? <div className="viewerMessage">Gerando pose track R6 v4.1…</div> : null}
           {error ? <div className="viewerMessage">Retarget indisponível</div> : null}
         </div>
       </div>
@@ -457,7 +457,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
           <span>
             {diagnostics
               ? `State: ${diagnostics.state} · Lock: ${diagnostics.support ?? "none"} · Plant err ${diagnostics.plantError.toFixed(3)} · Root Y ${diagnostics.rootY.toFixed(2)} / XZ ${diagnostics.rootXZ.toFixed(2)} · L ${diagnostics.leftFootLift.toFixed(2)} / R ${diagnostics.rightFootLift.toFixed(2)}`
-              : "Temporal pose track + XYZ foot plant + elbow/knee plane"}
+              : "Exact support-foot IK + stable elbow/knee plane"}
           </span>
         </div>
         {gifError ? <div className="gifExportError">{gifError}</div> : null}
