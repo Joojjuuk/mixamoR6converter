@@ -16,7 +16,8 @@ const HEADER_HEIGHT = 38;
 const FOOTER_HEIGHT = 28;
 const VIEW_HEIGHT = GIF_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT;
 const HALF_WIDTH = GIF_WIDTH / 2;
-const GIF_FPS = 10;
+const TARGET_GIF_FPS = 10;
+const MAX_GIF_FRAMES = 120;
 
 function cleanFilename(value: string) {
   const cleaned = value
@@ -78,8 +79,12 @@ export async function exportComparisonGif({
   if (!context) throw new Error("Could not create GIF drawing context");
 
   const gif = GIFEncoder();
-  const frameCount = Math.max(2, Math.ceil(duration * GIF_FPS) + 1);
-  const frameDelay = Math.round(1000 / GIF_FPS);
+  const idealFrameCount = Math.ceil(duration * TARGET_GIF_FPS) + 1;
+  const frameCount = THREEClamp(idealFrameCount, 2, MAX_GIF_FRAMES);
+  const frameDelay = Math.max(
+    20,
+    Math.round((duration / Math.max(frameCount - 1, 1)) * 1000),
+  );
 
   for (let frame = 0; frame < frameCount; frame += 1) {
     const time = Math.min((frame / (frameCount - 1)) * duration, duration);
@@ -133,7 +138,6 @@ export async function exportComparisonGif({
 
     onProgress?.((frame + 1) / frameCount);
 
-    // Yield occasionally so the UI can update the progress label.
     if (frame % 4 === 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
@@ -153,4 +157,8 @@ export async function exportComparisonGif({
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+function THREEClamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
