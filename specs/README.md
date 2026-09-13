@@ -13,8 +13,10 @@ Este diretório é a fonte de verdade funcional/técnica do projeto.
 ## Índice
 
 - [`000-original-product-spec.md`](./000-original-product-spec.md) — prompt/especificação base do projeto.
-- [`001-smart-r6-solver-v2.md`](./001-smart-r6-solver-v2.md) — nova estratégia do retarget visual R6.
+- [`001-smart-r6-solver-v2.md`](./001-smart-r6-solver-v2.md) — estratégia de estabilização do primeiro retarget.
+- [`002-smart-r6-solver-v3-and-gif-debug.md`](./002-smart-r6-solver-v3-and-gif-debug.md) — grounding por pé de apoio, cadeia de braços e export GIF de comparação.
 - [`bugs/BUG-001-standing-melee-combo-preview.md`](./bugs/BUG-001-standing-melee-combo-preview.md) — primeiro bug real observado em animação Mixamo.
+- [`bugs/BUG-002-preview-v2-floating-feet-and-arms.md`](./bugs/BUG-002-preview-v2-floating-feet-and-arms.md) — defeitos residuais de pés e braços após o v2.
 - [`TEMPLATE.md`](./TEMPLATE.md) — modelo para novas specs.
 
 ## Fluxo de uma mudança
@@ -30,7 +32,7 @@ implementação
         ↓
 comparação original x R6
         ↓
-validação em 0.25x / 1x
+GIF + validação em 0.25x / 1x
         ↓
 merge
 ```
@@ -41,9 +43,9 @@ Sempre que possível anexar ao issue/PR:
 
 - nome do FBX;
 - duração e FPS;
-- vídeo/GIF de 5–10 s do comparador;
+- GIF gerado pelo botão `Baixar GIF comparação`;
 - timestamps problemáticos;
 - screenshots de antecipação, impacto e recuperação;
 - descrição curta do defeito (`pé flutua`, `torso gira`, `braço inverte`, etc.).
 
-O arquivo FBX é a melhor evidência porque permite reproduzir o frame exato no solver.
+O arquivo FBX continua sendo a melhor evidência para reprodução exata, e o GIF sincronizado passa a ser a melhor evidência visual para revisão rápida.
