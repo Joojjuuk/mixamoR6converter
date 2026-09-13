@@ -34,7 +34,11 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   const solverVersion = body.solverVersion ?? CURRENT_SOLVER_VERSION;
-  if (solverVersion !== "preview-v1" && solverVersion !== "preview-v2") {
+  if (
+    solverVersion !== "preview-v1" &&
+    solverVersion !== "preview-v2" &&
+    solverVersion !== "preview-v3"
+  ) {
     return NextResponse.json({ error: "Unsupported solver version" }, { status: 400 });
   }
 
