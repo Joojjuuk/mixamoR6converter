@@ -24,16 +24,6 @@ type BoneMap = {
   rightFoot: THREE.Bone;
 };
 
-type BindPose = {
-  hipsPosition: THREE.Vector3;
-  torsoQuaternion: THREE.Quaternion;
-  headQuaternion: THREE.Quaternion;
-  leftArmDirection: THREE.Vector3;
-  rightArmDirection: THREE.Vector3;
-  leftLegDirection: THREE.Vector3;
-  rightLegDirection: THREE.Vector3;
-};
-
 type R6Rig = {
   root: THREE.Group;
   torsoFrame: THREE.Group;
@@ -43,6 +33,27 @@ type R6Rig = {
   leftLegPivot: THREE.Group;
   rightLegPivot: THREE.Group;
 };
+
+type SolverReference = {
+  sourceGroundY: number;
+};
+
+type SolverDiagnostics = {
+  support: "left" | "right" | "airborne";
+  rootY: number;
+  rootYawDeg: number;
+};
+
+type BodyFrame = {
+  quaternion: THREE.Quaternion;
+  forward: THREE.Vector3;
+};
+
+const DOWN = new THREE.Vector3(0, -1, 0);
+const UP = new THREE.Vector3(0, 1, 0);
+const EPSILON = 1e-6;
+const R6_LIMB_LENGTH = 2;
+const AIRBORNE_THRESHOLD = 0.28;
 
 function normalizedBoneName(name: string) {
   return name
@@ -93,32 +104,10 @@ function worldPosition(object: THREE.Object3D) {
   return object.getWorldPosition(new THREE.Vector3());
 }
 
-function worldQuaternion(object: THREE.Object3D) {
-  return object.getWorldQuaternion(new THREE.Quaternion());
-}
-
 function directionBetween(from: THREE.Object3D, to: THREE.Object3D) {
-  return worldPosition(to).sub(worldPosition(from)).normalize();
-}
-
-function captureBindPose(bones: BoneMap): BindPose {
-  return {
-    hipsPosition: worldPosition(bones.hips),
-    torsoQuaternion: worldQuaternion(bones.torso),
-    headQuaternion: worldQuaternion(bones.head),
-    leftArmDirection: directionBetween(bones.leftArm, bones.leftHand),
-    rightArmDirection: directionBetween(bones.rightArm, bones.rightHand),
-    leftLegDirection: directionBetween(bones.leftLeg, bones.leftFoot),
-    rightLegDirection: directionBetween(bones.rightLeg, bones.rightFoot),
-  };
-}
-
-function relativeQuaternion(current: THREE.Quaternion, bind: THREE.Quaternion) {
-  return current.clone().multiply(bind.clone().invert()).normalize();
-}
-
-function directionDelta(bind: THREE.Vector3, current: THREE.Vector3) {
-  return new THREE.Quaternion().setFromUnitVectors(bind, current).normalize();
+  const direction = worldPosition(to).sub(worldPosition(from));
+  if (direction.lengthSq() < EPSILON) return null;
+  return direction.normalize();
 }
 
 function makeBlock(size: [number, number, number], position: [number, number, number]) {
@@ -178,56 +167,206 @@ function createR6Rig(): R6Rig {
   };
 }
 
-function applyR6Pose(rig: R6Rig, bones: BoneMap, bind: BindPose) {
-  const torsoDelta = relativeQuaternion(
-    worldQuaternion(bones.torso),
-    bind.torsoQuaternion,
-  );
-  rig.torsoFrame.quaternion.copy(torsoDelta);
+function buildBodyFrame(bones: BoneMap): BodyFrame | null {
+  const hips = worldPosition(bones.hips);
+  const chest = worldPosition(bones.torso);
+  const leftShoulder = worldPosition(bones.leftArm);
+  const rightShoulder = worldPosition(bones.rightArm);
 
-  const inverseTorso = torsoDelta.clone().invert();
+  const up = chest.sub(hips);
+  const shoulderRight = rightShoulder.sub(leftShoulder);
+  if (up.lengthSq() < EPSILON || shoulderRight.lengthSq() < EPSILON) return null;
 
-  const headDelta = relativeQuaternion(
-    worldQuaternion(bones.head),
-    bind.headQuaternion,
-  );
-  rig.headPivot.quaternion.copy(inverseTorso.clone().multiply(headDelta));
+  up.normalize();
+  shoulderRight.normalize();
 
-  const leftArmWorld = directionDelta(
-    bind.leftArmDirection,
-    directionBetween(bones.leftArm, bones.leftHand),
+  const forward = new THREE.Vector3().crossVectors(shoulderRight, up);
+  if (forward.lengthSq() < EPSILON) return null;
+  forward.normalize();
+
+  const right = new THREE.Vector3().crossVectors(up, forward).normalize();
+  const correctedUp = new THREE.Vector3().crossVectors(forward, right).normalize();
+
+  const matrix = new THREE.Matrix4().makeBasis(right, correctedUp, forward);
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix).normalize();
+
+  return { quaternion, forward };
+}
+
+function yawFromForward(forward: THREE.Vector3) {
+  const flat = new THREE.Vector3(forward.x, 0, forward.z);
+  if (flat.lengthSq() < EPSILON) {
+    return { yaw: 0, quaternion: new THREE.Quaternion() };
+  }
+
+  flat.normalize();
+  const yaw = Math.atan2(flat.x, flat.z);
+  return {
+    yaw,
+    quaternion: new THREE.Quaternion().setFromAxisAngle(UP, yaw),
+  };
+}
+
+function clampLocalRotation(
+  quaternion: THREE.Quaternion,
+  limitsDeg: { x: number; y: number; z: number },
+) {
+  const euler = new THREE.Euler().setFromQuaternion(quaternion, "YXZ");
+  euler.x = THREE.MathUtils.clamp(
+    euler.x,
+    THREE.MathUtils.degToRad(-limitsDeg.x),
+    THREE.MathUtils.degToRad(limitsDeg.x),
   );
-  rig.leftArmPivot.quaternion.copy(
-    inverseTorso.clone().multiply(leftArmWorld),
+  euler.y = THREE.MathUtils.clamp(
+    euler.y,
+    THREE.MathUtils.degToRad(-limitsDeg.y),
+    THREE.MathUtils.degToRad(limitsDeg.y),
+  );
+  euler.z = THREE.MathUtils.clamp(
+    euler.z,
+    THREE.MathUtils.degToRad(-limitsDeg.z),
+    THREE.MathUtils.degToRad(limitsDeg.z),
+  );
+  return new THREE.Quaternion().setFromEuler(euler).normalize();
+}
+
+function orientPivotFromDirection(
+  pivot: THREE.Group,
+  targetDirectionLocal: THREE.Vector3 | null,
+  restAxis = DOWN,
+) {
+  if (!targetDirectionLocal || targetDirectionLocal.lengthSq() < EPSILON) return;
+  pivot.quaternion
+    .setFromUnitVectors(restAxis, targetDirectionLocal.clone().normalize())
+    .normalize();
+}
+
+function legEndpointY(pivot: THREE.Group) {
+  const endpointOffset = DOWN.clone()
+    .multiplyScalar(R6_LIMB_LENGTH)
+    .applyQuaternion(pivot.quaternion);
+  return pivot.position.y + endpointOffset.y;
+}
+
+function applyR6PoseV2(
+  rig: R6Rig,
+  bones: BoneMap,
+  reference: SolverReference,
+): SolverDiagnostics | null {
+  const bodyFrame = buildBodyFrame(bones);
+  if (!bodyFrame) return null;
+
+  const rootYaw = yawFromForward(bodyFrame.forward);
+  rig.root.quaternion.copy(rootYaw.quaternion);
+
+  // Root owns only yaw. The torso receives the remaining body orientation.
+  const torsoLocal = rootYaw.quaternion
+    .clone()
+    .invert()
+    .multiply(bodyFrame.quaternion)
+    .normalize();
+  rig.torsoFrame.quaternion.copy(
+    clampLocalRotation(torsoLocal, { x: 70, y: 80, z: 70 }),
   );
 
-  const rightArmWorld = directionDelta(
-    bind.rightArmDirection,
-    directionBetween(bones.rightArm, bones.rightHand),
+  const inverseBody = bodyFrame.quaternion.clone().invert();
+  const inverseRootYaw = rootYaw.quaternion.clone().invert();
+
+  // Arms are solved in torso/body-local space. The R6 rest arm axis is DOWN.
+  const leftArmWorld = directionBetween(bones.leftArm, bones.leftHand);
+  const rightArmWorld = directionBetween(bones.rightArm, bones.rightHand);
+  orientPivotFromDirection(
+    rig.leftArmPivot,
+    leftArmWorld ? leftArmWorld.applyQuaternion(inverseBody) : null,
   );
-  rig.rightArmPivot.quaternion.copy(
-    inverseTorso.clone().multiply(rightArmWorld),
+  orientPivotFromDirection(
+    rig.rightArmPivot,
+    rightArmWorld ? rightArmWorld.applyQuaternion(inverseBody) : null,
   );
 
-  rig.leftLegPivot.quaternion.copy(
-    directionDelta(
-      bind.leftLegDirection,
-      directionBetween(bones.leftLeg, bones.leftFoot),
-    ),
+  // Legs belong to the yaw-only root, not to the leaning torso.
+  const leftLegWorld = directionBetween(bones.leftLeg, bones.leftFoot);
+  const rightLegWorld = directionBetween(bones.rightLeg, bones.rightFoot);
+  orientPivotFromDirection(
+    rig.leftLegPivot,
+    leftLegWorld ? leftLegWorld.applyQuaternion(inverseRootYaw) : null,
   );
-  rig.rightLegPivot.quaternion.copy(
-    directionDelta(
-      bind.rightLegDirection,
-      directionBetween(bones.rightLeg, bones.rightFoot),
-    ),
+  orientPivotFromDirection(
+    rig.rightLegPivot,
+    rightLegWorld ? rightLegWorld.applyQuaternion(inverseRootYaw) : null,
   );
 
-  const hipsNow = worldPosition(bones.hips);
-  rig.root.position.y = THREE.MathUtils.clamp(
-    hipsNow.y - bind.hipsPosition.y,
-    -1.5,
-    3,
+  // Head follows the neck/head direction relative to the body frame instead of
+  // copying Mixamo bone axes directly (their local axes do not match R6).
+  const headWorld = directionBetween(bones.torso, bones.head);
+  if (headWorld) {
+    const headLocal = headWorld.applyQuaternion(inverseBody);
+    const headRotation = new THREE.Quaternion()
+      .setFromUnitVectors(UP, headLocal.normalize())
+      .normalize();
+    rig.headPivot.quaternion.copy(
+      clampLocalRotation(headRotation, { x: 45, y: 50, z: 35 }),
+    );
+  }
+
+  // Grounding: at least one rigid R6 leg remains near y=0 while the Mixamo
+  // source is grounded. Both feet may leave the floor only when the source
+  // itself is measurably airborne.
+  const leftFootY = worldPosition(bones.leftFoot).y;
+  const rightFootY = worldPosition(bones.rightFoot).y;
+  const sourceLowestFootY = Math.min(leftFootY, rightFootY);
+  const sourceLift = sourceLowestFootY - reference.sourceGroundY;
+  const airborne = sourceLift > AIRBORNE_THRESHOLD;
+
+  const targetLowestFootY = Math.min(
+    legEndpointY(rig.leftLegPivot),
+    legEndpointY(rig.rightLegPivot),
   );
+
+  const contactCorrection = THREE.MathUtils.clamp(-targetLowestFootY, -1.25, 0.35);
+  const airborneLift = airborne
+    ? THREE.MathUtils.clamp(sourceLift - AIRBORNE_THRESHOLD, 0, 3)
+    : 0;
+
+  rig.root.position.set(0, contactCorrection + airborneLift, 0);
+
+  const support: SolverDiagnostics["support"] = airborne
+    ? "airborne"
+    : leftFootY <= rightFootY
+      ? "left"
+      : "right";
+
+  return {
+    support,
+    rootY: rig.root.position.y,
+    rootYawDeg: THREE.MathUtils.radToDeg(rootYaw.yaw),
+  };
+}
+
+function measureSourceGround(
+  mixer: THREE.AnimationMixer,
+  sourceObject: THREE.Object3D,
+  bones: BoneMap,
+  duration: number,
+) {
+  const sampleCount = THREE.MathUtils.clamp(Math.ceil(duration * 30), 30, 180);
+  let groundY = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index <= sampleCount; index += 1) {
+    const sampleTime = (index / sampleCount) * duration;
+    mixer.setTime(sampleTime);
+    sourceObject.updateMatrixWorld(true);
+    groundY = Math.min(
+      groundY,
+      worldPosition(bones.leftFoot).y,
+      worldPosition(bones.rightFoot).y,
+    );
+  }
+
+  mixer.setTime(0);
+  sourceObject.updateMatrixWorld(true);
+
+  return Number.isFinite(groundY) ? groundY : 0;
 }
 
 function addSceneBasics(scene: THREE.Scene) {
@@ -327,6 +466,7 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [clipName, setClipName] = useState<string>("Animation");
+  const [diagnostics, setDiagnostics] = useState<SolverDiagnostics | null>(null);
 
   useEffect(() => {
     playback.current.playing = playing;
@@ -346,7 +486,7 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
     let mixer: THREE.AnimationMixer | null = null;
     let sourceObject: THREE.Group | null = null;
     let bones: BoneMap | null = null;
-    let bind: BindPose | null = null;
+    let reference: SolverReference | null = null;
     let clipDuration = 0;
     let lastUiUpdate = 0;
 
@@ -387,14 +527,20 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
         bones = detectMixamoBones(sourceObject);
         if (!bones) {
           throw new Error(
-            "Could not map the required Mixamo bones. Phase 1 currently expects a standard Mixamo humanoid skeleton.",
+            "Could not map the required Mixamo bones. The current solver expects a standard Mixamo humanoid skeleton.",
           );
         }
 
-        bind = captureBindPose(bones);
-        applyR6Pose(r6Rig, bones, bind);
-
         clipDuration = Math.max(clip.duration, 0.001);
+        reference = {
+          sourceGroundY: measureSourceGround(mixer, sourceObject, bones, clipDuration),
+        };
+
+        mixer.setTime(0);
+        sourceObject.updateMatrixWorld(true);
+        const initialDiagnostics = applyR6PoseV2(r6Rig, bones, reference);
+        setDiagnostics(initialDiagnostics);
+
         setDuration(clipDuration);
         setClipName(clip.name || "Animation");
         setLoading(false);
@@ -402,7 +548,7 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
         void fetch(`/api/projects/${projectId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "preview_ready" }),
+          body: JSON.stringify({ status: "preview_ready", solverVersion: "preview-v2" }),
         });
       } catch (loadError) {
         if (cancelled) return;
@@ -415,7 +561,7 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
       frameId = requestAnimationFrame(render);
       const delta = Math.min(clock.getDelta(), 0.1);
 
-      if (mixer && sourceObject && bones && bind && clipDuration > 0) {
+      if (mixer && sourceObject && bones && reference && clipDuration > 0) {
         if (playback.current.playing) {
           playback.current.time += delta * playback.current.speed;
 
@@ -432,10 +578,11 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
 
         mixer.setTime(playback.current.time);
         sourceObject.updateMatrixWorld(true);
-        applyR6Pose(r6Rig, bones, bind);
+        const frameDiagnostics = applyR6PoseV2(r6Rig, bones, reference);
 
         if (now - lastUiUpdate > 50) {
           setTime(playback.current.time);
+          if (frameDiagnostics) setDiagnostics(frameDiagnostics);
           lastUiUpdate = now;
         }
       }
@@ -524,8 +671,12 @@ export function AnimationComparison({ projectId, sourceUrl }: Props) {
           </button>
         </div>
         <div className="transportMeta">
-          <span>{clipName} · Smart R6 preview-v1</span>
-          <span>Câmeras sincronizadas · Root Motion in-place</span>
+          <span>{clipName} · Smart R6 preview-v2</span>
+          <span>
+            {diagnostics
+              ? `Support: ${diagnostics.support} · Root Y ${diagnostics.rootY.toFixed(2)} · Yaw ${diagnostics.rootYawDeg.toFixed(1)}°`
+              : "Frame solver + grounding"}
+          </span>
         </div>
       </div>
     </section>
