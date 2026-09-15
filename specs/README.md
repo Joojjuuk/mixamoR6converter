@@ -16,6 +16,7 @@ Este diretório é a fonte de verdade funcional/técnica do projeto.
 - [`001-smart-r6-solver-v2.md`](./001-smart-r6-solver-v2.md) — estratégia de estabilização do primeiro retarget.
 - [`002-smart-r6-solver-v3-and-gif-debug.md`](./002-smart-r6-solver-v3-and-gif-debug.md) — grounding por pé de apoio, cadeia de braços e export GIF de comparação.
 - [`003-smart-r6-solver-v4-temporal-footplant.md`](./003-smart-r6-solver-v4-temporal-footplant.md) — pose track temporal, foot plant XYZ, histerese e orientação por plano.
+- [`004-smart-r6-solver-v5-pose-fitting.md`](./004-smart-r6-solver-v5-pose-fitting.md) — pose fitting, membros R6 nativos (pernas no Torso), contato contínuo e Debug Solver.
 - [`bugs/BUG-001-standing-melee-combo-preview.md`](./bugs/BUG-001-standing-melee-combo-preview.md) — primeiro bug real observado em animação Mixamo.
 - [`bugs/BUG-002-preview-v2-floating-feet-and-arms.md`](./bugs/BUG-002-preview-v2-floating-feet-and-arms.md) — defeitos residuais de pés e braços após o v2.
 - [`bugs/BUG-003-preview-v3-validation.md`](./bugs/BUG-003-preview-v3-validation.md) — checklist de validação visual do v3.
