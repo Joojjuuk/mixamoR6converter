@@ -57,13 +57,9 @@ export type PoseTrackV5 = PoseTrack & { samples: (PoseSample & { debug: SolverDe
 const SIDES: Side[] = ["left", "right"];
 const LIMBS: LimbName[] = ["leftArm", "rightArm", "leftLeg", "rightLeg"];
 const EPSILON = 1e-6;
-const PLANE_EPSILON = 1e-4;
-const PLANE_FULL_CONFIDENCE = Math.sin(THREE.MathUtils.degToRad(20));
 const X_AXIS = new THREE.Vector3(1, 0, 0);
 const UP = new THREE.Vector3(0, 1, 0);
-const Z_AXIS = new THREE.Vector3(0, 0, 1);
 const DOWN = new THREE.Vector3(0, -1, 0);
-const FALLBACK_PLANE = new THREE.Vector3(-1, 0, 0);
 
 // R6 geometry. Must match createR6Rig(): 2-stud limbs, torso centre 3 studs above
 // the root, shoulders and hips hanging from the Torso (real R6 Motor6D tree).
@@ -84,14 +80,11 @@ const ARM_WEIGHTS: FitWeights = { silhouette: 1, upper: 1, end: 0.5, body: 0.3, 
 const LEG_WEIGHTS: FitWeights = { silhouette: 1, upper: 1, end: 0.6, body: 0, temporal: 0.1 };
 // Rigid-torso twist weighted by R6 lever arms: shoulders sit 1.5 studs out, hips 0.5.
 const TRUNK_SHOULDER_WEIGHT = 0.9;
-const ROOT_PRIOR_WEIGHT = 0.05;
-// A held leg never goes past horizontal-ish: keeps the block under the hip.
-const MIN_LEG_DROP = 0.35;
-const CROUCH_TRANSFER = 0.6;
-const CROUCH_PASSES = 3;
+const CONTACT_ITERATIONS = 12;
 // AnimationMixer wraps t === duration back to frame 0; sample just before it.
 const END_EPSILON = 1e-3;
-const HEAD_LIMIT = THREE.MathUtils.degToRad(50);
+const HEAD_FOLLOW = 0.6;
+const HEAD_LIMIT = THREE.MathUtils.degToRad(25);
 const ERROR_SAMPLES = [0.25, 0.5, 0.75, 1];
 
 // Normalized limb polyline: offsets from the chain root divided by total length.
@@ -113,7 +106,6 @@ type SourceFrame = ContactSample & {
   // Hip joint height above the source ground, per side: the leg's vertical span.
   hipHeights: Record<Side, number>;
   chains: Record<LimbName, Chain | null>;
-  planes: Record<LimbName, THREE.Vector3>;
   hands: Record<Side, THREE.Vector3>;
   headDirection: THREE.Vector3;
 };
@@ -198,40 +190,20 @@ function limbError(chain: Chain, direction: THREE.Vector3) {
   return Math.sqrt(sum / ERROR_SAMPLES.length);
 }
 
-// Direction + bend-plane roll with sign continuity. planeLocal = upper × lower
-// (unit segments), so its length is sin(bend): the plane is trusted in
-// proportion to that, falling back to the previous plane as the limb straightens
-// (a nearly straight chain has no defined elbow/knee plane to follow).
-function limbQuaternion(
+// Swing only: the block turns from hanging straight down to its direction with
+// no spin about its own axis — no "drill" twist, faces stay aligned with the
+// torso like a hand-keyed R6 limb. Straight up has no defined swing axis, so
+// near it the previous orientation is carried over (still twist-free).
+function swingQuaternion(
   directionLocal: THREE.Vector3,
-  planeLocal: THREE.Vector3,
-  previousPlane: THREE.Vector3 | null,
+  previous: { direction: THREE.Vector3; quaternion: THREE.Quaternion } | null,
 ) {
-  const yAxis = directionLocal.clone().negate().normalize();
-  const reference = previousPlane ?? FALLBACK_PLANE;
-  const plane = planeLocal.clone();
-  if (plane.dot(reference) < 0) plane.negate();
-  const confidence = THREE.MathUtils.clamp(plane.length() / PLANE_FULL_CONFIDENCE, 0, 1);
-  if (plane.lengthSq() > EPSILON) plane.normalize();
-  plane.multiplyScalar(confidence).addScaledVector(reference, 1 - confidence);
-  if (plane.lengthSq() < EPSILON) plane.copy(reference);
-  plane.normalize();
-
-  let zAxis = plane.clone().addScaledVector(yAxis, -plane.dot(yAxis));
-  for (const fallback of [previousPlane, FALLBACK_PLANE, Z_AXIS]) {
-    if (zAxis.lengthSq() >= PLANE_EPSILON) break;
-    if (fallback) zAxis = fallback.clone().addScaledVector(yAxis, -fallback.dot(yAxis));
-  }
-  zAxis.normalize();
-  const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
-  zAxis.crossVectors(xAxis, yAxis).normalize();
-
-  return {
-    quaternion: new THREE.Quaternion()
-      .setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis))
-      .normalize(),
-    plane,
-  };
+  const swing = new THREE.Quaternion().setFromUnitVectors(DOWN, directionLocal);
+  if (!previous) return swing;
+  const carried = new THREE.Quaternion()
+    .setFromUnitVectors(previous.direction, directionLocal)
+    .multiply(previous.quaternion);
+  return swing.slerp(carried, THREE.MathUtils.smoothstep(directionLocal.y, 0.6, 0.95)).normalize();
 }
 
 // Same rotation, same hemisphere as the previous sample: slerp never takes the long way.
@@ -245,13 +217,6 @@ function findExtraBone(bones: THREE.Bone[], name: string) {
   return bones.find(
     (bone) => bone.name.toLowerCase().replace(/mixamorig/g, "").replace(/[^a-z0-9]/g, "") === name,
   );
-}
-
-function bendPlane(points: THREE.Vector3[]) {
-  const upper = points[1].clone().sub(points[0]);
-  const lower = points[2].clone().sub(points[1]);
-  if (upper.lengthSq() < EPSILON || lower.lengthSq() < EPSILON) return new THREE.Vector3();
-  return new THREE.Vector3().crossVectors(upper.normalize(), lower.normalize());
 }
 
 function sourceTrunk(bones: BoneMap): Trunk | null {
@@ -350,12 +315,6 @@ function sampleSource(
       leftLeg: makeChain(points.leftLeg),
       rightLeg: makeChain(points.rightLeg),
     },
-    planes: {
-      leftArm: bendPlane(points.leftArm),
-      rightArm: bendPlane(points.rightArm),
-      leftLeg: bendPlane(points.leftLeg),
-      rightLeg: bendPlane(points.rightLeg),
-    },
     hands: {
       left: points.leftArm[points.leftArm.length - 1],
       right: points.rightArm[points.rightArm.length - 1],
@@ -420,12 +379,6 @@ export function buildPoseTrack(
   const scale = span > EPSILON ? LIMB / span : 1;
 
   const samples: PoseTrackV5["samples"] = [];
-  const planeMemory: Record<LimbName, THREE.Vector3 | null> = {
-    leftArm: null,
-    rightArm: null,
-    leftLeg: null,
-    rightLeg: null,
-  };
   let groundOffset: THREE.Vector3 | null = null;
   let trunk: Trunk | null = null;
   let yaw = 0;
@@ -436,7 +389,6 @@ export function buildPoseTrack(
     headQuaternion: THREE.Quaternion;
     limbQuaternion: Record<LimbName, THREE.Quaternion>;
     limbDirection: Record<LimbName, THREE.Vector3>;
-    pelvis: THREE.Vector3;
     contact: Record<Side, THREE.Vector3>;
     targets: Record<Side, THREE.Vector3>;
   } | null = null;
@@ -494,25 +446,10 @@ export function buildPoseTrack(
 
     // ---- Legs + root: contact solve in world space ------------------------
     const legName = (side: Side): LimbName => (side === "left" ? "leftLeg" : "rightLeg");
-    const planeLocal = (name: LimbName) => frame.planes[name].clone().applyQuaternion(torsoInverse);
     const hipOffset = (side: Side) => TORSO_CENTER.clone().add(toWorld(PIVOT[legName(side)]));
-    const cornerDrop = (side: Side, direction: THREE.Vector3) => {
-      const name = legName(side);
-      const local = limbQuaternion(
-        direction.clone().applyQuaternion(torsoInverse),
-        planeLocal(name),
-        planeMemory[name],
-      ).quaternion;
-      const world = torso.clone().multiply(local);
-      const x = X_AXIS.clone().applyQuaternion(world);
-      const z = Z_AXIS.clone().applyQuaternion(world);
-      return 0.5 * (Math.abs(x.y) + Math.abs(z.y));
-    };
-    // Lowest corner of the 1×2×1 leg block, relative to the root.
+    // Foot = centre of the leg block's sole, relative to the root.
     const contactRelative = (side: Side, direction: THREE.Vector3) =>
-      hipOffset(side)
-        .addScaledVector(direction, LIMB)
-        .sub(new THREE.Vector3(0, cornerDrop(side, direction), 0));
+      hipOffset(side).addScaledVector(direction, LIMB);
 
     const legDirection: Record<Side, THREE.Vector3> = {
       left: directions.leftLeg.clone(),
@@ -548,94 +485,56 @@ export function buildPoseTrack(
       right: footTarget("right"),
     };
 
-    // R6 legs cannot bend: a bent source leg becomes a leg swung out along the
-    // thigh's heading, and the body drops with it. A held leg keeps its fitted
-    // heading; how far it drops is a compromise between the source's own leg
-    // extension (hip above its contact point, scaled — this is what makes a
-    // crouch read as a crouch) and keeping the foot on its anchor (what stops a
-    // hip bob from sliding the foot, since a near-vertical rigid leg turns a
-    // small height change into a large one). CROUCH_TRANSFER is that dial.
-    const sourceDrop = {} as Record<Side, number>;
-    for (const side of SIDES) {
-      sourceDrop[side] = THREE.MathUtils.clamp(
-        ((frame.hipHeights[side] - lift[side]) * scale) / LIMB,
-        MIN_LEG_DROP,
-        1,
-      );
+    // Where the body wants to be: the source pelvis in the same ground frame, at
+    // the source hip height (scaled — a crouch lowers it).
+    const pelvisHeight = (frame.hipHeights.left + frame.hipHeights.right) / 2;
+    const hipCenter = hipOffset("left").add(hipOffset("right")).multiplyScalar(0.5);
+    const desired = new THREE.Vector3(
+      frame.pelvis.x * scale + groundOffset.x,
+      pelvisHeight * scale,
+      frame.pelvis.z * scale + groundOffset.z,
+    ).sub(hipCenter);
+
+    // A planted foot is a hard constraint: its hip sits exactly one leg length
+    // from the foot, so the root lies on a sphere around each planted foot.
+    // Project the desired root onto those spheres (heavier foot last, so a
+    // planted foot is always exact); two planted feet converge to where both
+    // legs reach. The legs then point straight at their feet.
+    const root = desired.clone();
+    const byLoad: Side[] = level.left <= level.right ? ["left", "right"] : ["right", "left"];
+    for (let iteration = 0; iteration < CONTACT_ITERATIONS; iteration += 1) {
+      for (const side of byLoad) {
+        if (level[side] <= 0) continue;
+        const center = targets[side].clone().sub(hipOffset(side));
+        const toRoot = root.clone().sub(center);
+        if (toRoot.y < EPSILON) toRoot.y = EPSILON; // hip stays above its foot
+        root.lerp(center.add(toRoot.setLength(LIMB)), level[side]);
+      }
     }
-    const setLegDrop = (side: Side, drop: number) => {
+    for (const side of SIDES) {
+      if (level[side] <= 0) continue;
+      const reach = targets[side].clone().sub(root).sub(hipOffset(side));
+      if (reach.lengthSq() < EPSILON) continue;
+      legDirection[side].lerp(reach.normalize(), level[side]).normalize();
+    }
+
+    // A lifted foot never goes through the floor: tilt it toward horizontal.
+    for (const side of SIDES) {
+      const hip = root.clone().add(hipOffset(side));
+      if (hip.y + legDirection[side].y * LIMB >= 0) continue;
+      const vertical = THREE.MathUtils.clamp(-hip.y / LIMB, -1, 1);
       const heading = new THREE.Vector3(legDirection[side].x, 0, legDirection[side].z);
       if (heading.lengthSq() < EPSILON) heading.copy(toWorld(new THREE.Vector3(0, 0, -1))).setY(0);
-      heading.setLength(Math.sqrt(Math.max(0, 1 - drop * drop)));
-      legDirection[side] = new THREE.Vector3(heading.x, -drop, heading.z).normalize();
-    };
-    for (const side of SIDES) {
-      if (level[side] > 0) setLegDrop(side, sourceDrop[side]);
-    }
-
-    // Contact weight ω = (|g|/LIMB²)·c⁴: a planted foot dominates a half-lifted
-    // one (16:1) while two planted feet share evenly — c/(1−c) would make the
-    // root swing between them on every 1 cm wobble of the source lift.
-    const weights = {} as Record<Side, number>;
-    for (const side of SIDES) {
-      weights[side] = (fits[legName(side)].length() / (LIMB * LIMB)) * level[side] ** 4;
-    }
-
-    // Root: ω-weighted mean of the roots the held feet imply. The prior (previous
-    // root carried by the source pelvis) only decides when no foot is loaded.
-    const prior: THREE.Vector3 = previous
-      ? previous.root.clone().addScaledVector(frame.pelvis.clone().sub(previous.pelvis), scale)
-      : new THREE.Vector3();
-    const solveRoot = () => {
-      const sum: THREE.Vector3 = prior.clone().multiplyScalar(ROOT_PRIOR_WEIGHT);
-      let total = ROOT_PRIOR_WEIGHT;
-      for (const side of SIDES) {
-        if (weights[side] <= 0) continue;
-        const bottom = targets[side]
-          .clone()
-          .add(new THREE.Vector3(0, cornerDrop(side, legDirection[side]), 0));
-        sum.addScaledVector(
-          bottom.sub(hipOffset(side)).addScaledVector(legDirection[side], -LIMB),
-          weights[side],
-        );
-        total += weights[side];
-      }
-      return sum.divideScalar(total);
-    };
-    let root: THREE.Vector3 = solveRoot();
-    for (let pass = 0; pass < CROUCH_PASSES; pass += 1) {
-      for (const side of SIDES) {
-        if (weights[side] <= 0) continue;
-        const hip = root.clone().add(hipOffset(side));
-        const reach = Math.min(Math.hypot(targets[side].x - hip.x, targets[side].z - hip.z) / LIMB, 0.99);
-        const anchored = Math.sqrt(1 - reach * reach);
-        setLegDrop(side, THREE.MathUtils.lerp(anchored, sourceDrop[side], CROUCH_TRANSFER * level[side]));
-      }
-      root = solveRoot();
-    }
-
-    // Feet never go through the floor: tilt the leg toward horizontal.
-    for (const side of SIDES) {
-      for (let iteration = 0; iteration < 3; iteration += 1) {
-        const hip = root.clone().add(hipOffset(side));
-        const drop = cornerDrop(side, legDirection[side]);
-        if (hip.y + legDirection[side].y * LIMB - drop >= -1e-4) break;
-        const vertical = THREE.MathUtils.clamp((drop - hip.y) / LIMB, -1, 1);
-        const heading = new THREE.Vector3(legDirection[side].x, 0, legDirection[side].z);
-        if (heading.lengthSq() < EPSILON) heading.copy(toWorld(new THREE.Vector3(0, 0, -1))).setY(0);
-        heading.normalize().multiplyScalar(Math.sqrt(1 - vertical * vertical));
-        legDirection[side] = new THREE.Vector3(heading.x, vertical, heading.z).normalize();
-      }
+      heading.normalize().multiplyScalar(Math.sqrt(1 - vertical * vertical));
+      legDirection[side] = new THREE.Vector3(heading.x, vertical, heading.z).normalize();
     }
 
     const contact: Record<Side, THREE.Vector3> = {
       left: root.clone().add(contactRelative("left", legDirection.left)),
       right: root.clone().add(contactRelative("right", legDirection.right)),
     };
-    // Reported lock: the most loaded foot (the one the solve keeps planted).
-    const support: Side | null = weights.left + weights.right <= 0
-      ? null
-      : weights.left >= weights.right ? "left" : "right";
+    // Reported lock: the most loaded foot (projected last, so always exact).
+    const support: Side | null = level.left + level.right <= 0 ? null : byLoad[1];
     const other: Side | null = support ? (support === "left" ? "right" : "left") : null;
     // Plant error = how far the loaded foot slid this frame beyond what its source
     // foot moved (0 while a planted foot stays planted).
@@ -653,16 +552,18 @@ export function buildPoseTrack(
     const limbQuaternions = {} as Record<LimbName, THREE.Quaternion>;
     const limbDirections = {} as Record<LimbName, THREE.Vector3>;
     for (const name of LIMBS) {
-      const local = directions[name].clone().applyQuaternion(torsoInverse);
-      const solved = limbQuaternion(local, planeLocal(name), planeMemory[name]);
-      planeMemory[name] = solved.plane;
-      limbQuaternions[name] = continuous(solved.quaternion, previous?.limbQuaternion[name] ?? null);
+      const local = directions[name].clone().applyQuaternion(torsoInverse).normalize();
+      limbQuaternions[name] = continuous(
+        swingQuaternion(local, previous ? { direction: previous.limbDirection[name], quaternion: previous.limbQuaternion[name] } : null),
+        previous?.limbQuaternion[name] ?? null,
+      );
       limbDirections[name] = local;
     }
 
+    // Head: a calm follower of the torso — part of the source head tilt, capped.
     const headLocal = frame.headDirection.clone().applyQuaternion(torsoInverse);
     let headQuaternion = headLocal.lengthSq() > EPSILON
-      ? new THREE.Quaternion().setFromUnitVectors(UP, headLocal.normalize())
+      ? new THREE.Quaternion().slerp(new THREE.Quaternion().setFromUnitVectors(UP, headLocal.normalize()), HEAD_FOLLOW)
       : new THREE.Quaternion();
     const headAngle = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(headQuaternion.w), 0, 1));
     if (headAngle > HEAD_LIMIT) {
@@ -726,7 +627,7 @@ export function buildPoseTrack(
         },
         contactLevel: { ...level },
         supportTarget: support ? targets[support].clone() : null,
-        otherTarget: other && weights[other] > 0 ? targets[other].clone() : null,
+        otherTarget: other && level[other] > 0 ? targets[other].clone() : null,
         torsoErrorDeg,
         totalError,
       },
@@ -739,7 +640,6 @@ export function buildPoseTrack(
       headQuaternion,
       limbQuaternion: limbQuaternions,
       limbDirection: limbDirections,
-      pelvis: frame.pelvis.clone(),
       contact,
       targets,
     };

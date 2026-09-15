@@ -27,7 +27,7 @@ Tratar o retarget como **pose fitting**: cada bloco R6 é o bastão rígido que 
 
 - pose track pré-amostrada a 30 FPS e interpolada no runtime (scrub determinístico);
 - contact state machine (`assignContactStates`, histerese, `smoothSpeeds`, probe estável toe/foot) — reaproveitada sem mudança de comportamento, agora como camada de classificação/diagnóstico;
-- continuidade de quaternion (mesmo hemisfério) e continuidade do plano cotovelo/joelho;
+- continuidade de quaternion (mesmo hemisfério); o roll pelo plano cotovelo/joelho saiu — virou swing sem twist;
 - proteção contra penetração no chão (agora correta);
 - GIF e WebM usam a mesma pose track;
 - `preview-v4.1` continua selecionável no viewer (botão **Solver**) para comparação no mesmo timestamp.
@@ -39,8 +39,8 @@ Mixamo @30 FPS ──► landmarks (hips, ombros, cotovelos, mãos, quadris, joe
                     │
                     ├─ torso: frame rígido (corda pelve→ombros, twist 90% ombros / 10% pelve)
                     ├─ braços/pernas: fit fechado por membro (custo linear na direção)
-                    ├─ pernas em contato: azimute da coxa + queda vinda da altura do quadril
-                    └─ root: média ponderada dos roots que os pés em contato implicam
+                    ├─ pés plantados: sola exatamente no alvo, perna aponta para o pé (IK)
+                    └─ root: pelve da fonte projetada nas esferas de alcance dos pés plantados
                     ▼
                pose track R6 (Root, Torso, Head, Left/Right Arm, Left/Right Leg)
 ```
@@ -59,27 +59,21 @@ Todo termo é uma distância ao quadrado entre um ponto do bloco rígido (`pivot
 | mão no espaço do corpo | 0.3 | — | posição da mão em relação ao peito (lateral normalizada: linha média→linha média, ombro→pivot R6) |
 | temporal | 0.1 | 0.1 | desempate em cadeias degeneradas, não suavização |
 
-Roll: normal do plano `upper × lower`, com confiança `sin(dobra)/sin(20°)`; membro quase reto herda o plano anterior (sem twist de 180°).
+Rotação só de **swing** (do bloco pendurado reto até a direção, sem giro no próprio eixo): nada de braço "girando como broca"; as faces do bloco ficam alinhadas com o torso como num R6 animado à mão. Perto de "reto para cima" (swing indefinido) a orientação do frame anterior é carregada, também sem twist.
 
-### 2. Pernas em contato — "acompanhamento R6"
+### 2. Pés — plantado é restrição dura
 
-Perna R6 não dobra. Joelho dobrado na fonte vira **perna aberta** a partir do quadril:
+- nível de contato contínuo `c = 1 − lift/0.39` (0 no exit height da state machine);
+- alvo do pé = `probe da fonte × escala + offset fixo do clip`: pé plantado na fonte ⇒ alvo fixo (o pé R6 não desliza); clip in-place ⇒ desliza igual à fonte; nada acumula entre passos;
+- o corpo quer ficar onde a pelve da fonte está (mesmo frame de chão), na altura do quadril da fonte escalada (`2 studs ↔ quadril com a perna estendida`, percentil 95 do clip);
+- esse root desejado é projetado nas esferas de raio 2 studs em volta de cada pé plantado (pé mais carregado por último ⇒ sempre exato; dois pés plantados convergem para onde as duas pernas alcançam) e a perna aponta direto para o pé: **a sola (centro da base do bloco) fica exatamente no chão, no mesmo ponto**;
+- com os pés sob o quadril a perna fica reta; quando a fonte abre base ou agacha, a perna R6 abre a partir do quadril e o corpo desce junto;
+- pé saindo do chão mistura IK → fit pela carga; pé no ar balança pela coxa (joelho alto ⇒ perna R6 para frente);
+- root motion segue a fonte. O viewer centraliza cada personagem na própria câmera.
 
-- **azimute** = direção horizontal do fit (coxa pesa) — joelho para frente ⇒ perna R6 para frente;
-- **queda vertical** = altura do quadril da fonte acima do próprio contato, escalada (`2 studs ↔ quadril com a perna estendida`, percentil 95 do clip). Agachou ⇒ quadril R6 desce e a perna abre;
-- compromisso `CROUCH_TRANSFER = 0.6` entre essa queda e a que mantém o pé na âncora (perna quase vertical transforma um pequeno "bob" do quadril em grande deslocamento horizontal do pé);
-- o pé toca o chão pelo canto mais baixo do bloco 1×2×1.
+### 3. Torso e cabeça
 
-### 3. Contato e root
-
-- nível de contato contínuo `c = 1 − lift/0.39` (0 no exit height da state machine) — nenhuma troca binária;
-- alvo do pé = `probe da fonte × escala + offset fixo do clip`: pé plantado na fonte ⇒ alvo fixo; clip in-place (pé desliza na fonte) ⇒ desliza igual; nada acumula entre passos;
-- root = média ponderada dos roots implicados pelos pés (peso `(|g|/4)·c⁴`) + prior fraco (root anterior + movimento da pelve da fonte) que só decide sem contato (salto);
-- root motion segue a fonte (escala da perna). O viewer centraliza cada personagem na própria câmera.
-
-### 4. Torso e cabeça
-
-Torso = corda pelve→ombros (inclinação real do tronco) com twist 90% ombros / 10% pelve (alavancas R6: ombros a 1.5 stud, quadris a 0.5). Sem clamp. Root recebe só yaw. Cabeça = `Head → HeadTop_End` no espaço do torso, limitada a 50°.
+Torso = corda pelve→ombros (inclinação real do tronco) com twist 90% ombros / 10% pelve (alavancas R6: ombros a 1.5 stud, quadris a 0.5). Root recebe só yaw. Cabeça contida: 60% da inclinação `Head → HeadTop_End` relativa ao torso, limitada a 25°, sem giro no eixo.
 
 ## Diagnóstico
 
@@ -93,13 +87,13 @@ O WebM grava a mesma linha de diagnóstico por frame no rodapé; com Debug ligad
 
 ## Critérios de aceitação
 
-- [ ] nenhum flip de 180° (maior passo angular de membro por frame < 90°; medido: 48° no melee, igual à fonte);
+- [ ] nenhum flip de 180° (maior passo angular de membro por frame < 90°; medido: 63° no melee, golpe real da fonte);
 - [ ] nenhum braço trocando de lado / perna invertendo;
-- [ ] ataque no chão não flutua (pé carregado no chão, canto do bloco ≥ −0.1 stud);
+- [ ] pé plantado: sola no chão, no mesmo ponto, sem flutuar (plant err ≈ 0, sola ≥ −0.05 stud);
+- [ ] braço/perna sem giro no próprio eixo; cabeça sem rotação exagerada;
 - [ ] salto real continua airborne (root sobe com a pelve da fonte);
-- [ ] pé de apoio não desliza livremente (plant err ≈ 0 enquanto a fonte mantém o pé);
 - [ ] torso não gira aleatoriamente;
-- [ ] joelho dobrado/lunge aparece como perna R6 aberta a partir do quadril;
+- [ ] joelho alto/lunge aparece como perna R6 aberta a partir do quadril;
 - [ ] mesmo timestamp = mesma pose (independe da direção do scrub);
 - [ ] GIF e WebM funcionam; WebM a 30 FPS com diagnóstico por frame.
 
@@ -110,22 +104,19 @@ Mesma métrica para os dois solvers (`Standing Melee Combo Attack Ver. 1`, 141 a
 | métrica | v4.1 | v5 |
 |---|---|---|
 | erro braço E/D (stud RMS, médio) | 0.43 / 0.46 | 0.28 / 0.28 |
-| erro perna E/D (máx) | 1.23 / 1.05 | 0.65 / 0.76 |
-| canto do pé de apoio (Y médio) | −0.34 (afunda) | +0.03 |
-| penetração do outro pé (pior) | −1.11 | −0.03 |
-| deslize do outro pé em duplo apoio (pior) | 0.95 | 0.32 |
-| inclinação da perna vs fonte (° médio) | 7.1 | 6.1 |
-| trocas de lado detectadas | 6 | 2* |
+| erro perna E/D (máx) | 1.23 / 1.05 | 0.64 / 0.63 |
+| deslize do pé de apoio por frame (médio) | 0.006 | 0.003 |
+| deslize do outro pé em duplo apoio (pior) | 0.95 | 0.06 |
+| base R6 / base da fonte | 1.15 | 0.98 |
+| trocas de lado detectadas | 6 | 0 |
 
-\* as 2 restantes são pernas que seguem a coxa para frente enquanto o pé da fonte fica atrás (comportamento pedido).
-
-Também verificados: `Standing Melee Combo Attack Ver. 3`, `Standing Taunt Chest Thump`, `Sheathing Sword`, e variantes sintéticas do melee com salto (15 frames airborne) e in-place (R6 fica no lugar: root final z 0.14 vs 3.54 com root motion). `node scripts/check-solver.mjs "<fbx>"` valida determinismo, scrub, flips e chão.
+Também verificados: `Standing Melee Combo Attack Ver. 3`, `Standing Taunt Chest Thump`, `Sheathing Sword`, e variantes sintéticas do melee com salto (15 frames airborne) e in-place (R6 fica no lugar: root final z 0.56 vs 3.96 com root motion). Teste no app real (upload pela UI, Chrome, scrub, Debug Solver, troca v5/v4.1, WebM gerado pelo botão). `node scripts/check-solver.mjs "<fbx>"` valida determinismo, scrub, flips e sola no chão.
 
 ## Limitações / próximos passos
 
-- em duplo apoio os dois pés dividem a correção: o pé "de apoio" pode deslizar ~4 cm/frame quando a fonte dobra/estica o joelho com os dois pés no chão (R6 rígido não tem outra saída);
+- bloco rígido inclinado com a sola no chão: a quina da frente entra no grid (até ~0.4 stud em lunge profundo) — é o preço de sola no chão sem tornozelo;
 - giro sobre um pé orbita o corpo em torno do quadril de apoio (quadris R6 a 1 stud);
-- proporções R6 ≠ humano: stance ~25% mais aberto que a fonte escalada;
+- quando a fonte agacha com os pés sob o quadril, o R6 fica mais alto (perna rígida não encurta);
 - pivots do preview ainda são "centro do topo do bloco"; offsets reais de Motor6D (C0/C1) entram no export Blender;
 - o `preview-v4.1` mantém o bug antigo da última amostra (frame 0) para não alterar a baseline de comparação;
 - WebM usa `MediaRecorder` em tempo real: com a aba em segundo plano o navegador estrangula timers e o vídeo sai em câmera lenta.
