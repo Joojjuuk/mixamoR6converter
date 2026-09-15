@@ -55,12 +55,12 @@ export default async function ProjectPage({ params }: Props) {
         </div>
         <div className="panel infoCard">
           <span>Root Motion</span>
-          <strong>In place + exact support-foot IK</strong>
+          <strong>Segue a fonte · contato contínuo</strong>
         </div>
       </div>
 
       <p className="hint">
-        O preview-v4.1 mantém a pose track temporal do v4, mas fecha o foot plant com IK de uma articulação compatível com R6: o pé de apoio é resolvido de volta no anchor após a correção do root. O probe usa toe estável em X/Z e os planos de cotovelo/joelho preservam continuidade entre frames.
+        O preview-v5 trata o retarget como pose fitting: cada bloco R6 gira no próprio encaixe do Torso (ombro/quadril) e aponta para onde a cadeia Mixamo aponta (upper arm/coxa + mão/pé). Joelho dobrado vira perna aberta a partir do quadril e o corpo desce junto; os pés em contato seguem o próprio pé da fonte (parado quando ele está plantado). Use “Solver” para comparar com o preview-v4.1 e “Debug Solver” para ver alvos e erros.
       </p>
     </>
   );

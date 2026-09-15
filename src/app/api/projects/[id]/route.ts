@@ -39,7 +39,8 @@ export async function PATCH(request: Request, context: RouteContext) {
     solverVersion !== "preview-v2" &&
     solverVersion !== "preview-v3" &&
     solverVersion !== "preview-v4" &&
-    solverVersion !== "preview-v4.1"
+    solverVersion !== "preview-v4.1" &&
+    solverVersion !== "preview-v5"
   ) {
     return NextResponse.json({ error: "Unsupported solver version" }, { status: 400 });
   }
