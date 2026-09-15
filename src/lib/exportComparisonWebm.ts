@@ -5,13 +5,16 @@ type ExportComparisonWebmOptions = {
   clipName: string;
   solverVersion: string;
   renderAt: (time: number) => Promise<void>;
+  // Per-frame solver diagnostics burned into the footer (read after renderAt).
+  annotate?: () => string;
   onProgress?: (progress: number) => void;
 };
 
 const WEBM_WIDTH = 1280;
 const WEBM_HEIGHT = 480;
 const HEADER_HEIGHT = 48;
-const FOOTER_HEIGHT = 36;
+const FOOTER_HEIGHT = 56;
+const FOOTER_LINE = 18;
 const VIEW_HEIGHT = WEBM_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT;
 const HALF_WIDTH = WEBM_WIDTH / 2;
 const WEBM_FPS = 30;
@@ -68,6 +71,7 @@ function drawComparisonFrame(
   solverVersion: string,
   time: number,
   duration: number,
+  annotation: string,
 ) {
   context.fillStyle = "#0b0d10";
   context.fillRect(0, 0, WEBM_WIDTH, WEBM_HEIGHT);
@@ -86,21 +90,18 @@ function drawComparisonFrame(
   context.fillRect(HALF_WIDTH - 1, HEADER_HEIGHT, 2, VIEW_HEIGHT);
   context.fillRect(0, WEBM_HEIGHT - FOOTER_HEIGHT, WEBM_WIDTH, 1);
 
+  const firstLine = WEBM_HEIGHT - FOOTER_HEIGHT + FOOTER_LINE;
   context.fillStyle = "#a7b0bd";
   context.font = "13px system-ui, sans-serif";
   context.textAlign = "left";
-  context.fillText(
-    `${clipName} · ${solverVersion}`,
-    18,
-    WEBM_HEIGHT - FOOTER_HEIGHT / 2,
-  );
+  context.fillText(`${clipName} · ${solverVersion}`, 18, firstLine);
   context.textAlign = "right";
-  context.fillText(
-    `${time.toFixed(2)}s / ${duration.toFixed(2)}s`,
-    WEBM_WIDTH - 18,
-    WEBM_HEIGHT - FOOTER_HEIGHT / 2,
-  );
+  context.fillText(`${time.toFixed(2)}s / ${duration.toFixed(2)}s`, WEBM_WIDTH - 18, firstLine);
   context.textAlign = "left";
+  if (annotation) {
+    context.font = "11px ui-monospace, monospace";
+    context.fillText(annotation, 18, firstLine + FOOTER_LINE, WEBM_WIDTH - 36);
+  }
 }
 
 function supportedMimeType() {
@@ -124,6 +125,7 @@ export async function exportComparisonWebm({
   clipName,
   solverVersion,
   renderAt,
+  annotate,
   onProgress,
 }: ExportComparisonWebmOptions) {
   if (typeof MediaRecorder === "undefined") {
@@ -180,6 +182,7 @@ export async function exportComparisonWebm({
         solverVersion,
         time,
         duration,
+        annotate?.() ?? "",
       );
 
       onProgress?.((frame + 1) / frameCount);

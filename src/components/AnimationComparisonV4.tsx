@@ -6,23 +6,23 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { exportComparisonGif } from "@/lib/exportComparisonGif";
 import { exportComparisonWebm } from "@/lib/exportComparisonWebm";
-import {
-  SAMPLE_FPS,
-  SOLVER_VERSION,
-  applyPose,
-  buildPoseTrack,
-  createR6Rig,
-  detectMixamoBones,
-  fitSourceModel,
-  measureSourceReference,
-  type PoseTrack,
-  type SolverDiagnostics,
-} from "@/lib/r6SolverV41";
+import * as solverV41 from "@/lib/r6SolverV41";
+import * as solverV5 from "@/lib/r6SolverV5";
+import type { PoseTrack, SolverDiagnostics } from "@/lib/r6SolverV41";
+import type { SolverDebugFrame } from "@/lib/r6SolverV5";
+import { createR6DebugOverlay, createSourceLandmarkOverlay } from "@/lib/solverDebugOverlay";
 
 type Props = {
   projectId: string;
   sourceUrl: string;
 };
+
+// v4.1 stays selectable so every WebM can be compared against the previous solver.
+const SOLVERS = { "preview-v5": solverV5, "preview-v4.1": solverV41 } as const;
+type SolverVersion = keyof typeof SOLVERS;
+const SAMPLE_FPS = solverV5.SAMPLE_FPS;
+
+type FrameInfo = { diagnostics: SolverDiagnostics | null; debug: SolverDebugFrame | null };
 
 type Viewport = ReturnType<typeof createViewport>;
 
@@ -83,8 +83,14 @@ function disposeScene(scene: THREE.Scene) {
   });
 }
 
-function syncCamera(originalView: Viewport, r6View: Viewport) {
-  r6View.camera.position.copy(originalView.camera.position);
+// Same orbit (orientation + offset) in both views; each view is centred on its
+// own character so root motion never walks either one out of frame.
+function syncCamera(originalView: Viewport, r6View: Viewport, r6Focus?: THREE.Vector3) {
+  const offset = originalView.camera.position.clone().sub(originalView.controls.target);
+  const focus = r6Focus
+    ? new THREE.Vector3(r6Focus.x, originalView.controls.target.y, r6Focus.z)
+    : originalView.controls.target;
+  r6View.camera.position.copy(focus).add(offset);
   r6View.camera.quaternion.copy(originalView.camera.quaternion);
   r6View.camera.fov = originalView.camera.fov;
   r6View.camera.updateProjectionMatrix();
@@ -95,12 +101,25 @@ function formatTime(seconds: number) {
   return seconds.toFixed(2);
 }
 
+function describeFrame({ diagnostics, debug }: FrameInfo) {
+  if (!diagnostics) return "";
+  const base = `State ${diagnostics.state} · Lock ${diagnostics.support ?? "none"} · Plant err ${diagnostics.plantError.toFixed(3)} · Root Y ${diagnostics.rootY.toFixed(2)} / XZ ${diagnostics.rootXZ.toFixed(2)} · Lift L ${diagnostics.leftFootLift.toFixed(2)} / R ${diagnostics.rightFootLift.toFixed(2)}`;
+  if (!debug) return base;
+  const { limbs } = debug;
+  return `${base} · Err arm L ${limbs.leftArm.error.toFixed(2)} R ${limbs.rightArm.error.toFixed(2)} · leg L ${limbs.leftLeg.error.toFixed(2)} R ${limbs.rightLeg.error.toFixed(2)} · torso ${debug.torsoErrorDeg.toFixed(0)}° · total ${debug.totalError.toFixed(2)} · contact L ${debug.contactLevel.left.toFixed(2)} R ${debug.contactLevel.right.toFixed(2)}`;
+}
+
 export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
   const originalHost = useRef<HTMLDivElement>(null);
   const r6Host = useRef<HTMLDivElement>(null);
   const playback = useRef({ playing: true, speed: 1, loop: true, time: 0 });
   const renderExactFrame = useRef<((time: number) => void) | null>(null);
+  const debugEnabled = useRef(false);
+  const lastFrame = useRef<FrameInfo>({ diagnostics: null, debug: null });
 
+  const [solverVersion, setSolverVersion] = useState<SolverVersion>("preview-v5");
+  const [debugSolver, setDebugSolver] = useState(false);
+  const [debugFrame, setDebugFrame] = useState<SolverDebugFrame | null>(null);
   const [duration, setDuration] = useState(0);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(true);
@@ -127,40 +146,75 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
   useEffect(() => {
     playback.current.loop = loop;
   }, [loop]);
+  useEffect(() => {
+    debugEnabled.current = debugSolver;
+    renderExactFrame.current?.(playback.current.time);
+  }, [debugSolver]);
 
   useEffect(() => {
     if (!originalHost.current || !r6Host.current) return;
 
+    const solver = SOLVERS[solverVersion];
     let cancelled = false;
     let frameId = 0;
     let mixer: THREE.AnimationMixer | null = null;
     let sourceObject: THREE.Group | null = null;
     let poseTrack: PoseTrack | null = null;
+    let sourceOverlay: ReturnType<typeof createSourceLandmarkOverlay> | null = null;
+    let sourceHips: THREE.Bone | null = null;
     let clipDuration = 0;
     let lastUiUpdate = 0;
+
+    setLoading(true);
+    setError(null);
 
     const originalView = createViewport(originalHost.current);
     const r6View = createViewport(r6Host.current);
     r6View.controls.enabled = false;
 
-    const r6Rig = createR6Rig();
+    const r6Rig = solver.createR6Rig();
     r6View.scene.add(r6Rig.root);
+    const r6Overlay = createR6DebugOverlay();
+    r6View.scene.add(r6Overlay.group);
     const clock = new THREE.Clock();
 
-    function renderAtTime(nextTime: number) {
+    function renderAtTime(nextTime: number): FrameInfo | null {
       if (!mixer || !sourceObject || !poseTrack) return null;
 
       const bounded = THREE.MathUtils.clamp(nextTime, 0, clipDuration);
-      mixer.setTime(bounded);
+      // AnimationMixer wraps t === duration back to frame 0; show the last frame.
+      mixer.setTime(Math.min(bounded, Math.max(0, clipDuration - 1e-3)));
       sourceObject.updateMatrixWorld(true);
-      const frameDiagnostics = applyPose(r6Rig, poseTrack, bounded);
+      const frame: FrameInfo = {
+        diagnostics: solver.applyPose(r6Rig, poseTrack, bounded),
+        debug: "debugAt" in solver ? solver.debugAt(poseTrack, bounded) : null,
+      };
+      r6Overlay.update(debugEnabled.current ? frame.debug : null);
+      sourceOverlay?.update(debugEnabled.current);
+      lastFrame.current = frame;
 
+      if (sourceHips) {
+        const hips = sourceHips.getWorldPosition(new THREE.Vector3());
+        const shift = new THREE.Vector3(
+          hips.x - originalView.controls.target.x,
+          0,
+          hips.z - originalView.controls.target.z,
+        );
+        originalView.controls.target.add(shift);
+        originalView.camera.position.add(shift);
+      }
       originalView.controls.update();
-      syncCamera(originalView, r6View);
+      syncCamera(originalView, r6View, r6Rig.root.position);
       originalView.renderer.render(originalView.scene, originalView.camera);
       r6View.renderer.render(r6View.scene, r6View.camera);
 
-      return frameDiagnostics;
+      return frame;
+    }
+
+    function showFrame(frame: FrameInfo | null) {
+      if (!frame) return;
+      setDiagnostics(frame.diagnostics);
+      setDebugFrame(frame.debug);
     }
 
     async function load() {
@@ -169,7 +223,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         if (cancelled) return;
 
         sourceObject = loaded;
-        fitSourceModel(sourceObject);
+        solver.fitSourceModel(sourceObject);
         originalView.scene.add(sourceObject);
 
         const skeleton = new THREE.SkeletonHelper(sourceObject);
@@ -186,37 +240,38 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         mixer.setTime(0);
         sourceObject.updateMatrixWorld(true);
 
-        const bones = detectMixamoBones(sourceObject);
+        const bones = solver.detectMixamoBones(sourceObject);
         if (!bones) {
           throw new Error(
-            "Could not map the required Mixamo arm/leg chain. Solver v4.1 expects the standard Mixamo humanoid skeleton.",
+            "Could not map the required Mixamo arm/leg chain. The solver expects the standard Mixamo humanoid skeleton.",
           );
         }
+        sourceOverlay = createSourceLandmarkOverlay(bones);
+        originalView.scene.add(sourceOverlay.group);
+        sourceHips = bones.hips;
 
         clipDuration = Math.max(clip.duration, 0.001);
-        const reference = measureSourceReference(mixer, sourceObject, bones, clipDuration);
-        poseTrack = buildPoseTrack(mixer, sourceObject, bones, reference, clipDuration);
+        const reference = solver.measureSourceReference(mixer, sourceObject, bones, clipDuration);
+        poseTrack = solver.buildPoseTrack(mixer, sourceObject, bones, reference, clipDuration);
 
         if (poseTrack.samples.length < 2) {
-          throw new Error("Solver v4.1 could not build a temporal pose track for this FBX.");
+          throw new Error(`${solver.SOLVER_VERSION} could not build a temporal pose track for this FBX.`);
         }
 
-        playback.current.time = 0;
-        const initialDiagnostics = renderAtTime(0);
-        setDiagnostics(initialDiagnostics);
+        // Keep the timestamp across solver switches so v4.1 × v5 compare 1:1.
+        playback.current.time = Math.min(playback.current.time, clipDuration);
+        showFrame(renderAtTime(playback.current.time));
+        setTime(playback.current.time);
         setDuration(clipDuration);
         setClipName(clip.name || "Animation");
         setLoading(false);
 
-        renderExactFrame.current = (nextTime) => {
-          const frameDiagnostics = renderAtTime(nextTime);
-          if (frameDiagnostics) setDiagnostics(frameDiagnostics);
-        };
+        renderExactFrame.current = (nextTime) => showFrame(renderAtTime(nextTime));
 
         void fetch(`/api/projects/${projectId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "preview_ready", solverVersion: SOLVER_VERSION }),
+          body: JSON.stringify({ status: "preview_ready", solverVersion: solver.SOLVER_VERSION }),
         });
       } catch (loadError) {
         if (cancelled) return;
@@ -243,10 +298,10 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
           }
         }
 
-        const frameDiagnostics = renderAtTime(playback.current.time);
+        const frame = renderAtTime(playback.current.time);
         if (now - lastUiUpdate > 50) {
           setTime(playback.current.time);
-          if (frameDiagnostics) setDiagnostics(frameDiagnostics);
+          showFrame(frame);
           lastUiUpdate = now;
         }
       } else {
@@ -275,7 +330,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
       originalView.renderer.domElement.remove();
       r6View.renderer.domElement.remove();
     };
-  }, [projectId, sourceUrl]);
+  }, [projectId, sourceUrl, solverVersion]);
 
   function seek(nextTime: number) {
     const bounded = THREE.MathUtils.clamp(nextTime, 0, duration || 0);
@@ -312,7 +367,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         r6Canvas,
         duration,
         clipName,
-        solverVersion: SOLVER_VERSION,
+        solverVersion,
         renderAt: async (nextTime) => {
           playback.current.time = nextTime;
           renderExactFrame.current?.(nextTime);
@@ -356,12 +411,13 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         r6Canvas,
         duration,
         clipName,
-        solverVersion: SOLVER_VERSION,
+        solverVersion: debugSolver ? `${solverVersion} · debug` : solverVersion,
         renderAt: async (nextTime) => {
           playback.current.time = nextTime;
           renderExactFrame.current?.(nextTime);
           await Promise.resolve();
         },
+        annotate: () => describeFrame(lastFrame.current),
         onProgress: setWebmProgress,
       });
     } catch (exportError) {
@@ -393,7 +449,7 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         </div>
         <div className="viewerPane">
           <div ref={r6Host} className="canvasHost" />
-          {loading ? <div className="viewerMessage">Gerando pose track R6 v4.1…</div> : null}
+          {loading ? <div className="viewerMessage">Gerando pose track R6 {solverVersion}…</div> : null}
           {error ? <div className="viewerMessage">Retarget indisponível</div> : null}
         </div>
       </div>
@@ -451,15 +507,39 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
               ? `WebM ${Math.round(webmProgress * 100)}%`
               : "Baixar WebM comparação"}
           </button>
+          <button
+            type="button"
+            onClick={() => setSolverVersion((value) => (value === "preview-v5" ? "preview-v4.1" : "preview-v5"))}
+            disabled={loading || exportBusy}
+            title="Alterna entre o solver atual e o anterior no mesmo timestamp"
+          >
+            Solver: {solverVersion}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDebugSolver((value) => !value)}
+            disabled={exportBusy}
+            aria-pressed={debugSolver}
+            title="Landmarks Mixamo, alvos projetados, endpoints R6, contato e eixos do corpo"
+          >
+            {debugSolver ? "Debug Solver ✓" : "Debug Solver"}
+          </button>
         </div>
         <div className="transportMeta">
-          <span>{clipName} · Smart R6 {SOLVER_VERSION} · temporal {SAMPLE_FPS} FPS</span>
+          <span>{clipName} · Smart R6 {solverVersion} · temporal {SAMPLE_FPS} FPS</span>
           <span>
             {diagnostics
-              ? `State: ${diagnostics.state} · Lock: ${diagnostics.support ?? "none"} · Plant err ${diagnostics.plantError.toFixed(3)} · Root Y ${diagnostics.rootY.toFixed(2)} / XZ ${diagnostics.rootXZ.toFixed(2)} · L ${diagnostics.leftFootLift.toFixed(2)} / R ${diagnostics.rightFootLift.toFixed(2)}`
-              : "Exact support-foot IK + stable elbow/knee plane"}
+              ? describeFrame({ diagnostics, debug: debugSolver ? debugFrame : null })
+              : "Pose fitting R6 + contato contínuo"}
           </span>
         </div>
+        {debugSolver ? (
+          <div className="transportMeta">
+            <span>
+              Mixamo: rosa = landmarks · R6: azul = alvos projetados (cotovelo/mão, joelho/tornozelo) · amarelo = endpoint R6 · vermelho = erro · roxo = alvo mão (espaço do corpo) · verde/laranja = alvo do pé de apoio/outro · eixos: vermelho right, verde up, azul forward
+            </span>
+          </div>
+        ) : null}
         {gifError ? <div className="gifExportError">{gifError}</div> : null}
         {webmError ? <div className="gifExportError">{webmError}</div> : null}
       </div>
