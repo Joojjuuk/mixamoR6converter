@@ -41,7 +41,7 @@ const RIGHT_LEG_PIVOT = new THREE.Vector3(0.5, 2, 0);
 const FOOT_AIRBORNE_THRESHOLD = 0.45;
 const HIP_AIRBORNE_THRESHOLD = 0.2;
 const CONTACT_ENTER_HEIGHT = 0.23;
-const CONTACT_EXIT_HEIGHT = 0.39;
+export const CONTACT_EXIT_HEIGHT = 0.39;
 const CONTACT_ENTER_SPEED = 1.8;
 const CONTACT_EXIT_SPEED = 3.2;
 const SUPPORT_SWITCH_FRAMES = 4;
@@ -87,6 +87,22 @@ type RawSample = {
   support: SupportSide;
   segmentId: number;
 };
+
+// Subset used by the contact state machine; preview-v5 reuses it unchanged.
+export type ContactSample = Pick<
+  RawSample,
+  | "time"
+  | "leftProbe"
+  | "rightProbe"
+  | "hipsY"
+  | "leftFootLift"
+  | "rightFootLift"
+  | "leftFootSpeed"
+  | "rightFootSpeed"
+  | "state"
+  | "support"
+  | "segmentId"
+>;
 
 function worldPosition(object: THREE.Object3D) {
   return object.getWorldPosition(new THREE.Vector3());
@@ -260,7 +276,7 @@ function chainQuaternion(
 // Use the toe as the stable X/Z contact locator whenever it exists. The v4
 // probe switched between foot and toe based on which one was lower, which could
 // create artificial X/Z velocity spikes. Y still uses the lower point.
-function stableGroundProbe(foot: THREE.Bone, toe?: THREE.Bone) {
+export function stableGroundProbe(foot: THREE.Bone, toe?: THREE.Bone) {
   const footPosition = worldPosition(foot);
   if (!toe) return footPosition;
   const toePosition = worldPosition(toe);
@@ -373,7 +389,7 @@ function stabilizeQuaternion(
   return result;
 }
 
-function smoothSpeeds(samples: RawSample[]) {
+export function smoothSpeeds(samples: ContactSample[]) {
   const left: number[] = [];
   const right: number[] = [];
 
@@ -400,7 +416,7 @@ function smoothSpeeds(samples: RawSample[]) {
   });
 }
 
-function assignContactStates(samples: RawSample[], reference: SolverReference) {
+export function assignContactStates(samples: ContactSample[], reference: SolverReference) {
   let leftContact = false;
   let rightContact = false;
   let support: SupportSide = null;
