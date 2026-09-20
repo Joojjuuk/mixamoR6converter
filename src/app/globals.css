@@ -94,6 +94,20 @@ button, input { font: inherit; }
 .transport button { min-width: 42px; height: 38px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); cursor: pointer; }
 .transport button:disabled { opacity: .55; cursor: wait; }
 .transport .gifExportButton { min-width: 178px; padding: 0 12px; white-space: nowrap; }
+.transport .rbxmxExportButton {
+  min-width: 178px;
+  padding: 0 14px;
+  white-space: nowrap;
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #3b82f6;
+  font-weight: 600;
+  transition: background .15s ease, border-color .15s ease;
+}
+.transport .rbxmxExportButton:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #60a5fa;
+}
 .timeline { width: 100%; accent-color: var(--accent); }
 .timecode { width: 120px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
 .transportMeta { display: flex; justify-content: space-between; gap: 16px; margin-top: 8px; color: var(--muted); font-size: 11px; }
