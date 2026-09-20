@@ -11,6 +11,7 @@ import * as solverV5 from "@/lib/r6SolverV5";
 import type { PoseTrack, SolverDiagnostics } from "@/lib/r6SolverV41";
 import type { SolverDebugFrame } from "@/lib/r6SolverV5";
 import { createR6DebugOverlay, createSourceLandmarkOverlay } from "@/lib/solverDebugOverlay";
+import { downloadRbxmx, generateR6Rbxmx, sanitizeAnimationName } from "@/lib/exportR6Rbxmx";
 
 type Props = {
   projectId: string;
@@ -135,6 +136,9 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
   const [exportingWebm, setExportingWebm] = useState(false);
   const [webmProgress, setWebmProgress] = useState(0);
   const [webmError, setWebmError] = useState<string | null>(null);
+  const activeTrackRef = useRef<PoseTrack | null>(null);
+  const [hasTrack, setHasTrack] = useState(false);
+  const [rbxmxDownloaded, setRbxmxDownloaded] = useState(false);
   const exportBusy = exportingGif || exportingWebm;
 
   useEffect(() => {
@@ -253,6 +257,8 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
         clipDuration = Math.max(clip.duration, 0.001);
         const reference = solver.measureSourceReference(mixer, sourceObject, bones, clipDuration);
         poseTrack = solver.buildPoseTrack(mixer, sourceObject, bones, reference, clipDuration);
+        activeTrackRef.current = poseTrack;
+        setHasTrack(true);
 
         if (poseTrack.samples.length < 2) {
           throw new Error(`${solver.SOLVER_VERSION} could not build a temporal pose track for this FBX.`);
@@ -317,6 +323,8 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
 
     return () => {
       cancelled = true;
+      activeTrackRef.current = null;
+      setHasTrack(false);
       renderExactFrame.current = null;
       cancelAnimationFrame(frameId);
       originalView.observer.disconnect();
@@ -434,6 +442,16 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
     }
   }
 
+  function downloadR6Rbxmx() {
+    const track = activeTrackRef.current;
+    if (!track || track.samples.length === 0) return;
+    const safeClipName = sanitizeAnimationName(clipName || "Animation");
+    const xml = generateR6Rbxmx(safeClipName, track.samples, loop);
+    downloadRbxmx(`${safeClipName}_R6.rbxmx`, xml);
+    setRbxmxDownloaded(true);
+    window.setTimeout(() => setRbxmxDownloaded(false), 2500);
+  }
+
   return (
     <section className="panel comparisonWrap">
       <div className="viewerHeader">
@@ -484,6 +502,15 @@ export function AnimationComparisonV4({ projectId, sourceUrl }: Props) {
             disabled={exportBusy}
           >
             {loop ? "Loop ✓" : "Loop"}
+          </button>
+          <button
+            type="button"
+            className="rbxmxExportButton"
+            onClick={downloadR6Rbxmx}
+            disabled={loading || Boolean(error) || exportBusy || !hasTrack}
+            title="Baixar a animação convertida em formato KeyframeSequence (.rbxmx) para Roblox Studio"
+          >
+            {rbxmxDownloaded ? "✓ R6 (.rbxmx) baixado!" : "Baixar R6 (.rbxmx)"}
           </button>
           <button
             type="button"

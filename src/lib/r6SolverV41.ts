@@ -14,7 +14,7 @@ import {
   type SolverDiagnostics,
   type SolverReference,
   type SupportSide,
-} from "@/lib/r6SolverV4";
+} from "./r6SolverV4";
 
 export {
   applyPose,

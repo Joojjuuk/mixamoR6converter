@@ -12,14 +12,14 @@ import {
   type R6Rig,
   type SolverDiagnostics,
   type SolverReference,
-} from "@/lib/r6SolverV4";
+} from "./r6SolverV4";
 import {
   CONTACT_EXIT_HEIGHT,
   assignContactStates,
   smoothSpeeds,
   stableGroundProbe,
   type ContactSample,
-} from "@/lib/r6SolverV41";
+} from "./r6SolverV41";
 
 export { applyPose, collectBones, detectMixamoBones, fitSourceModel, measureSourceReference };
 export type { PoseTrack, SolverDiagnostics };
